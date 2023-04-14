@@ -14,7 +14,9 @@
 # limitations under the License.
 """ Conversion script for the Stable Diffusion checkpoints."""
 
+import os
 import re
+import tempfile
 from io import BytesIO
 from typing import Optional
 
@@ -49,7 +51,8 @@ from diffusers import (
     StableUnCLIPImg2ImgPipeline,
     StableUnCLIPPipeline,
     UnCLIPScheduler,
-    UNet2DConditionModel,
+    UNet2DConditionModel, DPMSolverSinglestepScheduler, KDPM2DiscreteScheduler, KDPM2AncestralDiscreteScheduler,
+    DEISMultistepScheduler, StableDiffusionControlNetPipeline, ControlNetModel,
 )
 from diffusers.pipelines.latent_diffusion.pipeline_latent_diffusion import LDMBertConfig, LDMBertModel
 from diffusers.pipelines.paint_by_example import PaintByExampleImageEncoder, PaintByExamplePipeline
@@ -1061,7 +1064,6 @@ def download_from_original_stable_diffusion_ckpt(
     if "global_step" in checkpoint:
         global_step = checkpoint["global_step"]
     else:
-        print("global_step key not found in model")
         global_step = None
 
     # NOTE: this while loop isn't great but this controlnet checkpoint has one additional
@@ -1069,23 +1071,11 @@ def download_from_original_stable_diffusion_ckpt(
     while "state_dict" in checkpoint:
         checkpoint = checkpoint["state_dict"]
 
-    if original_config_file is None:
-        key_name = "model.diffusion_model.input_blocks.2.1.transformer_blocks.0.attn2.to_k.weight"
-
-        # model_type = "v1"
-        config_url = "https://raw.githubusercontent.com/CompVis/stable-diffusion/main/configs/stable-diffusion/v1-inference.yaml"
-
-        if key_name in checkpoint and checkpoint[key_name].shape[-1] == 1024:
-            # model_type = "v2"
-            config_url = "https://raw.githubusercontent.com/Stability-AI/stablediffusion/main/configs/stable-diffusion/v2-inference-v.yaml"
-
-            if global_step == 110000:
-                # v2.1 needs to upcast attention
-                upcast_attention = True
-
-        original_config_file = BytesIO(requests.get(config_url).content)
-
-    original_config = OmegaConf.load(original_config_file)
+    model_version = "v1"
+    key_name = "model.diffusion_model.input_blocks.2.1.transformer_blocks.0.attn2.to_k.weight"
+    if key_name in checkpoint and checkpoint[key_name].shape[-1] == 1024:
+        model_version = "v2"
+    original_config = OmegaConf.load(original_config_file[model_version])
 
     if num_in_channels is not None:
         original_config["model"]["params"]["unet_config"]["params"]["in_channels"] = num_in_channels
@@ -1149,6 +1139,14 @@ def download_from_original_stable_diffusion_ckpt(
         scheduler = DPMSolverMultistepScheduler.from_config(scheduler.config)
     elif scheduler_type == "ddim":
         scheduler = scheduler
+    elif scheduler_type in ["dpmss", "dpmss++"]:
+        scheduler = DPMSolverSinglestepScheduler.from_config(scheduler.config)
+    elif scheduler_type == "dpm2k":
+        scheduler = KDPM2DiscreteScheduler.from_config(scheduler.config)
+    elif scheduler_type == "dpm2ak":
+        scheduler = KDPM2AncestralDiscreteScheduler.from_config(scheduler.config)
+    elif scheduler_type == "deis":
+        scheduler = DEISMultistepScheduler.from_config(scheduler.config)
     else:
         raise ValueError(f"Scheduler of type {scheduler_type} doesn't exist!")
 
