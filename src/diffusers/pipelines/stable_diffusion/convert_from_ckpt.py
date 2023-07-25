@@ -824,7 +824,7 @@ protected = {re.escape(x[0]): x[1] for x in textenc_transformer_conversion_lst}
 textenc_pattern = re.compile("|".join(protected.keys()))
 
 
-def convert_paint_by_example_checkpoint(checkpoint):
+def convert_paint_by_example_checkpoint(checkpoint, local_files_only=False):
     config = CLIPVisionConfig.from_pretrained("openai/clip-vit-large-patch14", local_files_only=local_files_only)
     model = PaintByExampleImageEncoder(config)
 
@@ -892,7 +892,7 @@ def convert_paint_by_example_checkpoint(checkpoint):
 
 
 def convert_open_clip_checkpoint(
-    checkpoint, config_name, prefix="cond_stage_model.model.", has_projection=False, **config_kwargs
+    checkpoint, config_name, prefix="cond_stage_model.model.", has_projection=False, local_files_only=False, **config_kwargs
 ):
     # text_model = CLIPTextModel.from_pretrained("stabilityai/stable-diffusion-2", subfolder="text_encoder")
     # text_model = CLIPTextModelWithProjection.from_pretrained(
@@ -956,7 +956,7 @@ def convert_open_clip_checkpoint(
     return text_model
 
 
-def stable_unclip_image_encoder(original_config):
+def stable_unclip_image_encoder(original_config, local_files_only=False):
     """
     Returns the image processor and clip image encoder for the img2img unclip pipeline.
 
