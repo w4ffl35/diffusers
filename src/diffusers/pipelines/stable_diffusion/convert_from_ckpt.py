@@ -777,7 +777,7 @@ def convert_ldm_bert_checkpoint(checkpoint, config):
 def convert_ldm_clip_checkpoint(checkpoint, local_files_only=False, text_encoder=None):
     if text_encoder is None:
         config_name = "openai/clip-vit-large-patch14"
-        config = CLIPTextConfig.from_pretrained(config_name)
+        config = CLIPTextConfig.from_pretrained(config_name, local_files_only=local_files_only)
 
         with init_empty_weights():
             text_model = CLIPTextModel(config)
@@ -825,7 +825,7 @@ textenc_pattern = re.compile("|".join(protected.keys()))
 
 
 def convert_paint_by_example_checkpoint(checkpoint):
-    config = CLIPVisionConfig.from_pretrained("openai/clip-vit-large-patch14")
+    config = CLIPVisionConfig.from_pretrained("openai/clip-vit-large-patch14", local_files_only=local_files_only)
     model = PaintByExampleImageEncoder(config)
 
     keys = list(checkpoint.keys())
@@ -898,7 +898,7 @@ def convert_open_clip_checkpoint(
     # text_model = CLIPTextModelWithProjection.from_pretrained(
     #    "laion/CLIP-ViT-bigG-14-laion2B-39B-b160k", projection_dim=1280
     # )
-    config = CLIPTextConfig.from_pretrained(config_name, **config_kwargs)
+    config = CLIPTextConfig.from_pretrained(config_name, **config_kwargs, local_files_only=local_files_only)
 
     with init_empty_weights():
         text_model = CLIPTextModelWithProjection(config) if has_projection else CLIPTextModel(config)
@@ -974,13 +974,13 @@ def stable_unclip_image_encoder(original_config):
 
         if clip_model_name == "ViT-L/14":
             feature_extractor = CLIPImageProcessor()
-            image_encoder = CLIPVisionModelWithProjection.from_pretrained("openai/clip-vit-large-patch14")
+            image_encoder = CLIPVisionModelWithProjection.from_pretrained("openai/clip-vit-large-patch14", local_files_only=local_files_only)
         else:
             raise NotImplementedError(f"Unknown CLIP checkpoint name in stable diffusion checkpoint {clip_model_name}")
 
     elif sd_clip_image_embedder_class == "FrozenOpenCLIPImageEmbedder":
         feature_extractor = CLIPImageProcessor()
-        image_encoder = CLIPVisionModelWithProjection.from_pretrained("laion/CLIP-ViT-H-14-laion2B-s32B-b79K")
+        image_encoder = CLIPVisionModelWithProjection.from_pretrained("laion/CLIP-ViT-H-14-laion2B-s32B-b79K", local_files_only=local_files_only)
     else:
         raise NotImplementedError(
             f"Unknown CLIP image embedder class in stable diffusion checkpoint {sd_clip_image_embedder_class}"
@@ -1100,6 +1100,7 @@ def download_from_original_stable_diffusion_ckpt(
     vae_path=None,
     text_encoder=None,
     tokenizer=None,
+    config_files=None
 ) -> DiffusionPipeline:
     """
     Load a Stable Diffusion pipeline object from a CompVis-style `.ckpt`/`.safetensors` file and (ideally) a `.yaml`
@@ -1156,6 +1157,14 @@ def download_from_original_stable_diffusion_ckpt(
             [CLIPTokenizer](https://huggingface.co/docs/transformers/v4.21.0/en/model_doc/clip#transformers.CLIPTokenizer)
             to use. If this parameter is `None`, the function will load a new instance of [CLIPTokenizer] by itself, if
             needed.
+        config_files (`Dict[str, str]`, *optional*, defaults to `None`):
+            A dictionary mapping from config file names to their contents. If this parameter is `None`, the function
+            will load the config files by itself, if needed.
+            Valid keys are:
+                - `v1`: Config file for Stable Diffusion v1
+                - `v2`: Config file for Stable Diffusion v2
+                - `xl`: Config file for Stable Diffusion XL
+                - `xl_refiner`: Config file for Stable Diffusion XL Refiner
         return: A StableDiffusionPipeline object representing the passed-in `.ckpt`/`.safetensors` file.
     """
 
@@ -1214,11 +1223,14 @@ def download_from_original_stable_diffusion_ckpt(
         key_name_sd_xl_base = "conditioner.embedders.1.model.transformer.resblocks.9.mlp.c_proj.bias"
         key_name_sd_xl_refiner = "conditioner.embedders.0.model.transformer.resblocks.9.mlp.c_proj.bias"
 
+
         # model_type = "v1"
+        config_file_type = "v1"
         config_url = "https://raw.githubusercontent.com/CompVis/stable-diffusion/main/configs/stable-diffusion/v1-inference.yaml"
 
         if key_name_v2_1 in checkpoint and checkpoint[key_name_v2_1].shape[-1] == 1024:
             # model_type = "v2"
+            config_file_type = "v2"
             config_url = "https://raw.githubusercontent.com/Stability-AI/stablediffusion/main/configs/stable-diffusion/v2-inference-v.yaml"
 
             if global_step == 110000:
@@ -1226,12 +1238,18 @@ def download_from_original_stable_diffusion_ckpt(
                 upcast_attention = True
         elif key_name_sd_xl_base in checkpoint:
             # only base xl has two text embedders
+            config_file_type = "xl"
             config_url = "https://raw.githubusercontent.com/Stability-AI/generative-models/main/configs/inference/sd_xl_base.yaml"
         elif key_name_sd_xl_refiner in checkpoint:
+            config_file_type = "xl_refiner"
             # only refiner xl has embedder and one text embedders
             config_url = "https://raw.githubusercontent.com/Stability-AI/generative-models/main/configs/inference/sd_xl_refiner.yaml"
 
-        original_config_file = BytesIO(requests.get(config_url).content)
+        if config_files is not None and config_file_type in config_files:
+            original_config_file = config_files[config_file_type]
+        else:
+            original_config_file = BytesIO(requests.get(config_url).content)
+
 
     original_config = OmegaConf.load(original_config_file)
 
@@ -1373,14 +1391,14 @@ def download_from_original_stable_diffusion_ckpt(
         for param_name, param in converted_vae_checkpoint.items():
             set_module_tensor_to_device(vae, param_name, "cpu", value=param)
     else:
-        vae = AutoencoderKL.from_pretrained(vae_path)
+        vae = AutoencoderKL.from_pretrained(vae_path, local_files_only=local_files_only)
 
     if model_type == "FrozenOpenCLIPEmbedder":
         config_name = "stabilityai/stable-diffusion-2"
         config_kwargs = {"subfolder": "text_encoder"}
 
         text_model = convert_open_clip_checkpoint(checkpoint, config_name, **config_kwargs)
-        tokenizer = CLIPTokenizer.from_pretrained("stabilityai/stable-diffusion-2", subfolder="tokenizer")
+        tokenizer = CLIPTokenizer.from_pretrained("stabilityai/stable-diffusion-2", subfolder="tokenizer", local_files_only=local_files_only)
 
         if stable_unclip is None:
             if controlnet:
@@ -1432,12 +1450,12 @@ def download_from_original_stable_diffusion_ckpt(
             elif stable_unclip == "txt2img":
                 if stable_unclip_prior is None or stable_unclip_prior == "karlo":
                     karlo_model = "kakaobrain/karlo-v1-alpha"
-                    prior = PriorTransformer.from_pretrained(karlo_model, subfolder="prior")
+                    prior = PriorTransformer.from_pretrained(karlo_model, subfolder="prior", local_files_only=local_files_only)
 
-                    prior_tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
-                    prior_text_model = CLIPTextModelWithProjection.from_pretrained("openai/clip-vit-large-patch14")
+                    prior_tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14", local_files_only=local_files_only)
+                    prior_text_model = CLIPTextModelWithProjection.from_pretrained("openai/clip-vit-large-patch14", local_files_only=local_files_only)
 
-                    prior_scheduler = UnCLIPScheduler.from_pretrained(karlo_model, subfolder="prior_scheduler")
+                    prior_scheduler = UnCLIPScheduler.from_pretrained(karlo_model, subfolder="prior_scheduler", local_files_only=local_files_only)
                     prior_scheduler = DDPMScheduler.from_config(prior_scheduler.config)
                 else:
                     raise NotImplementedError(f"unknown prior for stable unclip model: {stable_unclip_prior}")
@@ -1463,8 +1481,8 @@ def download_from_original_stable_diffusion_ckpt(
                 raise NotImplementedError(f"unknown `stable_unclip` type: {stable_unclip}")
     elif model_type == "PaintByExample":
         vision_model = convert_paint_by_example_checkpoint(checkpoint)
-        tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
-        feature_extractor = AutoFeatureExtractor.from_pretrained("CompVis/stable-diffusion-safety-checker")
+        tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14", local_files_only=local_files_only)
+        feature_extractor = AutoFeatureExtractor.from_pretrained("CompVis/stable-diffusion-safety-checker", local_files_only=local_files_only)
         pipe = PaintByExamplePipeline(
             vae=vae,
             image_encoder=vision_model,
@@ -1477,11 +1495,11 @@ def download_from_original_stable_diffusion_ckpt(
         text_model = convert_ldm_clip_checkpoint(
             checkpoint, local_files_only=local_files_only, text_encoder=text_encoder
         )
-        tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14") if tokenizer is None else tokenizer
+        tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14", local_files_only=local_files_only) if tokenizer is None else tokenizer
 
         if load_safety_checker:
-            safety_checker = StableDiffusionSafetyChecker.from_pretrained("CompVis/stable-diffusion-safety-checker")
-            feature_extractor = AutoFeatureExtractor.from_pretrained("CompVis/stable-diffusion-safety-checker")
+            safety_checker = StableDiffusionSafetyChecker.from_pretrained("CompVis/stable-diffusion-safety-checker", local_files_only=local_files_only)
+            feature_extractor = AutoFeatureExtractor.from_pretrained("CompVis/stable-diffusion-safety-checker", local_files_only=local_files_only)
         else:
             safety_checker = None
             feature_extractor = None
@@ -1509,9 +1527,9 @@ def download_from_original_stable_diffusion_ckpt(
             )
     elif model_type in ["SDXL", "SDXL-Refiner"]:
         if model_type == "SDXL":
-            tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
+            tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14", local_files_only=local_files_only)
             text_encoder = convert_ldm_clip_checkpoint(checkpoint, local_files_only=local_files_only)
-            tokenizer_2 = CLIPTokenizer.from_pretrained("laion/CLIP-ViT-bigG-14-laion2B-39B-b160k", pad_token="!")
+            tokenizer_2 = CLIPTokenizer.from_pretrained("laion/CLIP-ViT-bigG-14-laion2B-39B-b160k", pad_token="!", local_files_only=local_files_only)
 
             config_name = "laion/CLIP-ViT-bigG-14-laion2B-39B-b160k"
             config_kwargs = {"projection_dim": 1280}
@@ -1532,7 +1550,7 @@ def download_from_original_stable_diffusion_ckpt(
         else:
             tokenizer = None
             text_encoder = None
-            tokenizer_2 = CLIPTokenizer.from_pretrained("laion/CLIP-ViT-bigG-14-laion2B-39B-b160k", pad_token="!")
+            tokenizer_2 = CLIPTokenizer.from_pretrained("laion/CLIP-ViT-bigG-14-laion2B-39B-b160k", pad_token="!", local_files_only=local_files_only)
 
             config_name = "laion/CLIP-ViT-bigG-14-laion2B-39B-b160k"
             config_kwargs = {"projection_dim": 1280}
@@ -1554,7 +1572,7 @@ def download_from_original_stable_diffusion_ckpt(
     else:
         text_config = create_ldm_bert_config(original_config)
         text_model = convert_ldm_bert_checkpoint(checkpoint, text_config)
-        tokenizer = BertTokenizerFast.from_pretrained("bert-base-uncased")
+        tokenizer = BertTokenizerFast.from_pretrained("bert-base-uncased", local_files_only=local_files_only)
         pipe = LDMTextToImagePipeline(vqvae=vae, bert=text_model, tokenizer=tokenizer, unet=unet, scheduler=scheduler)
 
     return pipe
